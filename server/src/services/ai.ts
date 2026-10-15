@@ -45,7 +45,9 @@ function heuristicClassification(raw: string): { type: FeedbackType; normalizedR
   if (inquiryFraming || questionWithoutAction) {
     return { type: "question", normalizedRequest: "", priority: "low", needsClarification: false, clarificationNote: "" };
   }
-  if (includesAny(lower, ["love it", "looks great", "looks good", "nice work", "great job", "well done", "beautiful", "perfect as is"])) {
+  const praiseOnly = /^(?:(?:i|we)\s+)?(?:really\s+)?(?:love|like|appreciate|enjoy)\s+(?:the\s+)?(?:new\s+)?(?:layout|design|website|site|result|work|look|update|footer|header|page|experience|it|this|that)(?:\s+(?:so\s+much|a lot))?[.! ]*$/i.test(text)
+    || /^(?:(?:i|we)\s+)?(?:love|like)\s+(?:the\s+)?(?:new\s+)?(?:layout|design|website|site|result|work|look|update|footer|header|page)\b/i.test(text) && !/\b(but|however|although|please|change|add|remove|update|replace|reduce|increase|fix|make)\b/i.test(text);
+  if (praiseOnly || includesAny(lower, ["love it", "looks great", "looks good", "nice work", "great job", "well done", "beautiful", "perfect as is", "excellent work", "great work", "looks fantastic", "looks amazing"])) {
     return { type: "opinion", normalizedRequest: "", priority: "low", needsClarification: false, clarificationNote: "" };
   }
   const vague = includesAny(lower, ["make it pop", "make it better", "improve this", "fix it", "make it nicer", "more modern", "make it shine", "make it stand out"]);

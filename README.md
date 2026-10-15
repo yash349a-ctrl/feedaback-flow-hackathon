@@ -24,7 +24,7 @@
 
 ## Stack
 
-- Frontend: Next.js App Router + React + TypeScript + Tailwind CSS utilities (with the existing custom design system retained)
+- Frontend: Next.js App Router + React + TypeScript + Tailwind CSS 4 utilities (with the existing custom design system retained)
 - Backend: Node.js + Express + TypeScript
 - Database: MongoDB + Mongoose
 - LLM: OpenAI Responses API with Structured Outputs and Zod
@@ -32,32 +32,50 @@
 
 ## Requirements
 
-- Node.js 20.11+
+- Node.js 20.11+ and below 25 (Node 22.23.3 is pinned for hosting; Node 24 is also accepted for local development)
 - npm 10+
-- MongoDB (Atlas or local)
-- Optional but recommended: OpenAI API key and TinyFish API key
+- **MongoDB is the default storage for the hackathon prototype**, so projects, comments, duplicate groups, conflicts, tasks, and approval history persist in Atlas. This keeps the implementation aligned with the presentation architecture without adding production-scale complexity.
+- A temporary in-memory fallback remains available only for an intentional offline rehearsal: set `ENABLE_LOCAL_DEMO_MODE=true` in `server/.env`. It is disabled by default, and its data resets when the backend restarts. Do not use that fallback for the main demo if you are presenting MongoDB.
+- Optional for offline/demo analysis: OpenAI API key. Optional for live web source search/fetch: TinyFish API key.
 
 ChatGPT plans and OpenAI API billing are separate. Create an API key at [OpenAI API keys](https://platform.openai.com/api-keys). Create a TinyFish key at [TinyFish API keys](https://agent.tinyfish.ai/api-keys). See the [OpenAI Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs) and [TinyFish Fetch documentation](https://docs.tinyfish.ai/fetch-api).
 
 ## Run locally
 
-1. Clone / download this repository and open the `feedbackflow-ai` folder in a terminal.
+1. Extract the project and open the `feedbackflow-ai` folder in VS Code.
 2. Install dependencies:
 
    ```bash
    npm install
    ```
 
-3. Create `server/.env` by copying `server/.env.example`. Fill in `MONGODB_URI`; add `OPENAI_API_KEY` and `TINYFISH_API_KEY` if available. Do not commit this file.
-4. Create `client/.env.local` by copying `client/.env.example`, then set `NEXT_PUBLIC_API_URL=http://localhost:5000`.
-5. Start both apps from the repository root:
+3. Create local environment files from the templates (this never overwrites existing files):
+
+   ```bash
+   npm run setup:env
+   ```
+
+4. Open `server/.env` and set `MONGODB_URI` using **Atlas → Cluster0 → Connect → Drivers**. Replace Atlas' `<db_password>` placeholder with the database-user password without angle brackets; URL-encode special characters in the password. Keep the entire URI on one line. For the MongoDB-backed prototype, set `ENABLE_LOCAL_DEMO_MODE=false`. If you used an older codebase, check that this setting is not still `true`. Store credentials only in `server/.env`; never commit it. Add `OPENAI_API_KEY` and `TINYFISH_API_KEY` for live AI/web calls. Confirm `client/.env.local` contains `NEXT_PUBLIC_API_URL=http://localhost:5000`.
+
+5. Verify the Atlas connection before starting the UI:
+
+   ```bash
+   npm run check:db
+   ```
+
+   The command prints the database name on success. On failure, it reports common connection causes without printing your connection string.
+
+6. Start both apps from the repository root:
 
    ```bash
    npm run dev
    ```
 
-6. Open [http://localhost:3000](http://localhost:3000). The API health endpoint is [http://localhost:5000/health](http://localhost:5000/health).
-7. Click **Load demo data**, then **Analyze feedback**. Without an OpenAI key, a deterministic fallback demonstrates the workflow. Without a TinyFish key, demo website context is shown and live fetching is disabled.
+7. Open [http://localhost:3000](http://localhost:3000). The API health endpoint is [http://localhost:5000/health](http://localhost:5000/health). Click **Load demo data** to create the 25 sample feedback comments in MongoDB, then click **Analyze feedback**. Projects, comments, groups, conflicts, tasks, and approval history all persist in MongoDB.
+
+8. Add `OPENAI_API_KEY` for live extraction/classification and `TINYFISH_API_KEY` for real web source identification and extraction. The no-key OpenAI fallback is a deterministic heuristic, not live LLM output. TinyFish Search/Fetch is never simulated as a successful real call: it reports a setup/error message when the API key or provider is unavailable.
+
+The backend keeps the health endpoint available while attempting to connect. Database-backed API routes return a clear HTTP 503 if MongoDB is not connected, and the API retries transient connection errors every ten seconds. MongoDB is the default prototype storage. For offline rehearsals only, `ENABLE_LOCAL_DEMO_MODE=true` explicitly opts into temporary in-memory storage; it is disabled by default and is not the normal demo path.
 
 ### Run the apps separately
 
@@ -66,12 +84,28 @@ npm run dev -w server
 npm run dev -w client
 ```
 
-### Build / type-check
+### Prototype checks (recommended before demo)
+
+Run these from the repository root after `npm install`:
 
 ```bash
+npm run test:demo
+npm run test:tinyfish
+npm run check:db
+npm run smoke:test
+npm run test:prototype
 npm run typecheck
 npm run build
 ```
+
+- `test:demo` checks no-key fallback behavior against praise, actionable feedback, vague requests, duplicates, contradictions, and change-of-mind examples.
+- `test:tinyfish` uses mocked HTTP responses to check Search/Fetch request wiring, URL normalization, headers, and response parsing. It does **not** make a live TinyFish request.
+- `smoke:test` checks that expected source files and workflow/configuration markers exist.
+- `check:db` connects to the configured Atlas URI, prints the selected database name, and disconnects. Error output redacts the URI.
+- `test:prototype` is an isolated API regression test that explicitly opts into the in-memory fallback; it is not the actual MongoDB demo. Use `npm run check:db` and then test the main UI for the MongoDB-backed demo.
+- `typecheck` and `build` check the full TypeScript / Next.js build and must pass on your machine before deployment.
+
+These tests make the hackathon prototype easier to verify, but live OpenAI/TinyFish calls still require valid API keys and internet connectivity.
 
 ## Environment variables
 
@@ -79,7 +113,7 @@ npm run build
 
 | Name | Required | Description |
 |---|---|---|
-| `MONGODB_URI` | Yes | MongoDB connection string |
+| `MONGODB_URI` | Required for the normal prototype and deployment | MongoDB Atlas connection string; database operations return a helpful 503 until connected |
 | `PORT` | No | Defaults to `5000`; deployment providers may supply it |
 | `CLIENT_ORIGIN` | Yes in deployed app | Comma-separated exact frontend origin(s), e.g. `https://feedbackflow.vercel.app` |
 | `OPENAI_API_KEY` | No for demo | Enables OpenAI extraction, embeddings, duplicate confirmation, and conflict classification |
@@ -89,6 +123,7 @@ npm run build
 | `TINYFISH_API_KEY` | No for demo | Enables live source discovery with TinyFish Search and live page extraction with TinyFish Fetch |
 | `DUPLICATE_SIMILARITY_THRESHOLD` | No | Defaults to `0.76`; tune against your labeled sample comments |
 | `ENABLE_DEMO_SEED` | No | Defaults to `true`; set to `false` to disable the demo seed route |
+| `ENABLE_LOCAL_DEMO_MODE` | No | Defaults to `false`; set to `true` only for an offline, non-persistent development rehearsal |
 
 ### Frontend (`client/.env.local`)
 
@@ -172,6 +207,8 @@ The extracted text is limited before storing/prompting. The implementation rejec
 
 ### 1. MongoDB Atlas
 
+The main prototype and deployed service both use MongoDB Atlas. The optional in-memory rehearsal mode is disabled by default and is not used for the MongoDB demo.
+
 1. Create a MongoDB cluster and a dedicated database user with least-privilege access to the application database.
 2. Copy the connection URI from **Connect → Drivers**; replace the password placeholder and URL-encode special characters in the password.
 3. Configure Atlas network access as narrowly as your hosting setup allows. Render outbound IPs may vary by service/plan; check the service's outbound IP information and Atlas connectivity options. Use `0.0.0.0/0` only as a temporary hackathon fallback if necessary, then restrict access before using real client data.
@@ -182,11 +219,11 @@ Create a Node web service from this repository.
 
 - **Root directory:** `server`
 - **Build command:** `npm install --include=dev && npm run build`
-- **Node version:** `22.23.3` (pinned through `NODE_VERSION` and `.node-version` for repeatable builds)
+- **Node version:** `22.23.3` (pinned through `NODE_VERSION`, `.node-version`, and `.nvmrc` for repeatable builds)
 - **Start command:** `npm start`
 - **Environment variables:** `MONGODB_URI`, `CLIENT_ORIGIN`, optional `OPENAI_API_KEY`, `OPENAI_MODEL`, `EMBEDDING_MODEL`, `TINYFISH_API_KEY`, `ENABLE_DEMO_SEED=true`
 
-After deployment, open `https://YOUR-API/health` and ensure it returns `{ "ok": true, "database": "connected" }`.
+After deployment, open `https://YOUR-API/health` and ensure it returns `{ "ok": true, "ready": true, "database": "connected" }`. If `ready` is false, inspect the server logs and verify `MONGODB_URI` and Atlas Network Access.
 
 If your host cannot install the server with `server` as its root directory because it expects workspace metadata at the repo root, set root directory to the repo root, use `npm install --include=dev && npm run build -w server`, and start with `npm run start -w server`.
 

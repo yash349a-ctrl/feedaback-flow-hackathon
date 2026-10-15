@@ -1,5 +1,6 @@
-import "dotenv/config";
 import express from "express";
+import path from "node:path";
+import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
 import mongoose, { Types } from "mongoose";
@@ -10,8 +11,14 @@ import { z } from "zod";
 import { ApprovalEvent, Comment, Conflict, Group, Project, Task } from "./models";
 import { analyzeComments, buildTaskTitle, extractWebFeedbackItems, findConflicts, findDuplicateGroups } from "./services/ai";
 import { fetchWebsiteContext, searchFeedbackSources } from "./services/tinyfish";
+import { canOfferLocalDemo, isLocalDemoModeActive, localDemoRouter, shouldRouteToLocalDemo } from "./services/memoryDemo";
 import { asyncHandler } from "./utils/asyncHandler";
 import { errorHandler, HttpError, requireId } from "./utils/http";
+
+// Load the backend-local environment file explicitly. This works both under `tsx watch`
+// and from the compiled `dist/index.js`, regardless of the terminal's working directory.
+const serverEnvPath = path.resolve(__dirname, "../.env");
+dotenv.config({ path: serverEnvPath, override: false });
 
 const app = express();
 const configuredOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:3000").split(",").map((s) => s.trim()).filter(Boolean);
@@ -24,13 +31,47 @@ app.use(express.json({ limit: "2mb" }));
 app.use("/api", rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: "draft-7", legacyHeaders: false }));
 const aiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 12, standardHeaders: "draft-7", legacyHeaders: false, message: { error: "AI request limit reached. Wait a minute and try again." } });
 
-app.get("/health", (_req, res) => res.json({ ok: true, service: "feedbackflow-api", database: mongoose.connection.readyState === 1 ? "connected" : "disconnected" }));
+app.get("/health", (_req, res) => {
+  const databaseConnected = mongoose.connection.readyState === 1;
+  const localDemoAvailable = canOfferLocalDemo(databaseConnected);
+  res.json({
+    ok: true,
+    ready: databaseConnected || localDemoAvailable,
+    service: "feedbackflow-api",
+    database: databaseConnected ? "connected" : "disconnected",
+    storage: isLocalDemoModeActive() ? "memory-demo" : databaseConnected ? "mongodb" : localDemoAvailable ? "memory-demo-available" : "waiting-for-database"
+  });
+});
 app.get("/api/status", (_req, res) => res.json({
   openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
   tinyfishConfigured: Boolean(process.env.TINYFISH_API_KEY),
   databaseConnected: mongoose.connection.readyState === 1,
-  demoSeedEnabled: process.env.ENABLE_DEMO_SEED !== "false"
+  demoSeedEnabled: process.env.ENABLE_DEMO_SEED !== "false",
+  localDemoModeAvailable: canOfferLocalDemo(mongoose.connection.readyState === 1),
+  localDemoModeActive: isLocalDemoModeActive()
 }));
+
+// MongoDB is the default and expected storage, including for the hackathon prototype.
+// An in-memory fallback exists only for deliberate offline rehearsals; it requires
+// ENABLE_LOCAL_DEMO_MODE=true and is disabled by default in server/.env.example.
+app.use("/api", (req, res, next) => {
+  if (shouldRouteToLocalDemo(mongoose.connection.readyState === 1)) {
+    return localDemoRouter(req, res, next);
+  }
+  return next();
+});
+
+// Keep the HTTP server alive if Atlas has not been configured yet. Outside the local demo mode,
+// database-backed routes return a helpful 503 instead of crashing and taking down the frontend.
+app.use("/api", (req, res, next) => {
+  if (req.path === "/status") return next();
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      error: "MongoDB is not connected. Set MONGODB_URI in server/.env, check the Atlas database user and Network Access, then wait for the connection status to turn green."
+    });
+  }
+  return next();
+});
 
 const CreateProjectSchema = z.object({ name: z.string().trim().min(2).max(120), clientName: z.string().trim().max(120).optional().default("Client"), websiteUrl: z.string().trim().max(2000).optional().default("") });
 const ImportCommentsSchema = z.object({ text: z.string().trim().min(1).max(100000), source: z.enum(["chat", "email", "document", "screenshot"]).default("chat") });
@@ -564,17 +605,33 @@ app.use((req, res) => res.status(404).json({ error: `Route not found: ${req.meth
 app.use(errorHandler);
 
 const port = Number(process.env.PORT || 5000);
-const mongoUri = process.env.MONGODB_URI;
-if (!mongoUri) {
-  console.error("MONGODB_URI is required. Copy server/.env.example to server/.env and configure MongoDB.");
-  process.exit(1);
-}
+const mongoUri = process.env.MONGODB_URI?.trim();
 
-mongoose.connect(mongoUri)
-  .then(() => {
-    app.listen(port, "0.0.0.0", () => console.log(`FeedbackFlow API running on port ${port}`));
-  })
-  .catch((error) => {
-    console.error("Could not connect to MongoDB:", error);
-    process.exit(1);
-  });
+// Start HTTP immediately so the frontend and /api/status remain usable while MongoDB is
+// being configured or reconnecting. Data routes are protected by the readiness middleware.
+app.listen(port, "0.0.0.0", () => {
+  console.log(`FeedbackFlow API listening on port ${port}`);
+  if (!mongoUri) {
+    console.error(`MONGODB_URI is empty. Configure ${serverEnvPath} with your Atlas Drivers URI.`);
+    console.error("The frontend will remain available, but database-backed actions return HTTP 503 until Atlas connects.");
+    return;
+  }
+  if (!/^mongodb(?:\+srv)?:\/\//i.test(mongoUri)) {
+    console.error("MONGODB_URI must begin with mongodb:// or mongodb+srv://. Check server/.env.");
+    return;
+  }
+  void connectMongoWithRetry(mongoUri);
+});
+
+async function connectMongoWithRetry(uri: string): Promise<void> {
+  try {
+    await mongoose.connect(uri, { serverSelectionTimeoutMS: 12_000 });
+    console.log("MongoDB connected successfully.");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.replace(uri, "[redacted MongoDB URI]") : "Unknown connection error";
+    console.error("Could not connect to MongoDB. Check the Atlas URI, database user/password, Network Access, and DNS.");
+    console.error(detail);
+    const retry = setTimeout(() => { void connectMongoWithRetry(uri); }, 10_000);
+    retry.unref();
+  }
+}

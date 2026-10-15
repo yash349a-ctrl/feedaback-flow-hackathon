@@ -27,7 +27,7 @@ type Conflict = { _id: string; projectId: string; commentIds: Array<Comment | st
 type Group = { _id: string; projectId: string; commentIds: Array<Comment | string>; reason: string; status: "proposed" | "merged" | "rejected"; taskId?: string | { _id: string } };
 type Task = { _id: string; projectId: string; title: string; description: string; priority: "low" | "medium" | "high"; status: "todo" | "in_progress" | "in_review" | "approved"; sourceCommentIds: Array<Comment | string>; needsClarification: boolean; clarificationNote: string; conflictIds: Array<Conflict | string>; createdAt?: string; updatedAt?: string };
 type ApprovalEvent = { _id: string; taskId: string; decision: "approved" | "changes_requested"; note: string; createdAt: string };
-type ApiStatus = { openaiConfigured: boolean; tinyfishConfigured: boolean; databaseConnected: boolean; demoSeedEnabled: boolean };
+type ApiStatus = { openaiConfigured: boolean; tinyfishConfigured: boolean; databaseConnected: boolean; demoSeedEnabled: boolean; localDemoModeAvailable?: boolean; localDemoModeActive?: boolean };
 type SourceSearchResult = { position: number; siteName: string; title: string; snippet: string; url: string; domain: string };
 
 const VIEWS: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
@@ -124,6 +124,22 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
+    if (apiStatus?.databaseConnected !== false) return;
+    const poll = window.setInterval(async () => {
+      try {
+        const status = await api<ApiStatus>("/api/status");
+        setApiStatus(status);
+        if (status.databaseConnected || status.localDemoModeAvailable) {
+          const result = await api<{ projects: Project[] }>("/api/projects");
+          setProjects(result.projects);
+          if (result.projects.length) setActiveProjectId((current) => current || result.projects[0]._id);
+        }
+      } catch { /* Keep the setup banner visible; next poll can recover. */ }
+    }, 5000);
+    return () => window.clearInterval(poll);
+  }, [apiStatus?.databaseConnected]);
+
+  useEffect(() => {
     const savedTheme = window.localStorage.getItem("feedbackflow-theme");
     if (savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
     setThemeReady(true);
@@ -139,11 +155,16 @@ export default function HomePage() {
     let cancelled = false;
     (async () => {
       try {
-        const [status, result] = await Promise.all([
-          api<ApiStatus>("/api/status"), api<{ projects: Project[] }>("/api/projects")
-        ]);
+        const status = await api<ApiStatus>("/api/status");
         if (cancelled) return;
-        setApiStatus(status); setProjects(result.projects);
+        setApiStatus(status);
+        if (!status.databaseConnected && !status.localDemoModeAvailable) {
+          setProjects([]);
+          return;
+        }
+        const result = await api<{ projects: Project[] }>("/api/projects");
+        if (cancelled) return;
+        setProjects(result.projects);
         if (result.projects.length) setActiveProjectId(result.projects[0]._id);
       } catch (error) {
         if (!cancelled) notify(error instanceof Error ? error.message : "Could not connect to FeedbackFlow API.", "error");
@@ -343,6 +364,8 @@ export default function HomePage() {
   }
 
   const taskGroups = useMemo(() => Object.fromEntries(STATUSES.map((s) => [s.id, tasks.filter((t) => t.status === s.id)])) as Record<Task["status"], Task[]>, [tasks]);
+  const canUseWorkspace = Boolean(apiStatus?.databaseConnected || apiStatus?.localDemoModeAvailable);
+  const localDemoActive = Boolean(apiStatus?.localDemoModeActive || (!apiStatus?.databaseConnected && apiStatus?.localDemoModeAvailable));
 
   if (startupLoading) return <div className="empty-project"><div className="empty-project-card"><div className="empty-icon"><LoaderCircle size={26} className="spinner" /></div><h1>Starting FeedbackFlow</h1><p>Connecting to your workspace and loading projects…</p></div></div>;
 
@@ -357,7 +380,7 @@ export default function HomePage() {
         <div className="sidebar-bottom">
           <div className="side-label">Your projects</div>
           {projects.length ? projects.slice(0, 4).map((p) => <div key={p._id} className={`project-mini ${p._id === activeProjectId ? "active" : ""}`} onClick={() => { setActiveProjectId(p._id); setActiveView("overview"); }} title={p.name}><span className="project-dot" /><span>{p.name}</span></div>) : <div style={{ color: "#7e85a1", fontSize: 11, padding: "8px 12px" }}>No projects yet</div>}
-          <button className="nav-item" style={{ marginTop: 7, width: "100%" }} onClick={() => setNewProjectOpen(true)}><Plus size={17} /><span>New project</span></button>
+          <button className="nav-item" style={{ marginTop: 7, width: "100%" }} onClick={() => setNewProjectOpen(true)} disabled={!canUseWorkspace} title={!canUseWorkspace ? "Connect MongoDB or enable local demo mode" : "Create a project"}><Plus size={17} /><span>New project</span></button>
           <div className="side-footer"><div className="avatar">FF</div><div className="side-user"><div className="side-user-name">Project workspace</div><div className="side-user-role">Hackathon edition</div></div></div>
         </div>
       </aside>
@@ -376,13 +399,15 @@ export default function HomePage() {
               {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
               <span className="theme-toggle-label">{theme === "dark" ? "Light mode" : "Dark mode"}</span>
             </button>
-            <div className="status-indicator" title="Backend connectivity"><span style={{ background: apiStatus?.databaseConnected ? "#26b785" : "#d9a441" }} />{apiStatus?.databaseConnected ? "Connected" : "Checking API"}</div>
+            <div className="status-indicator" title="Backend / storage mode"><span style={{ background: localDemoActive ? "#8b83ff" : apiStatus?.databaseConnected ? "#26b785" : "#d9a441" }} />{localDemoActive ? "Local demo mode" : apiStatus?.databaseConnected ? "MongoDB connected" : apiStatus ? "Database offline" : "Checking API"}</div>
             {apiStatus?.openaiConfigured ? <span className="status-pill pill-green"><Sparkles size={11} /> OpenAI enabled</span> : <span className="status-pill pill-amber"><Zap size={11} /> Demo AI</span>}
-            <button className="button button-primary" onClick={() => setNewProjectOpen(true)}><Plus size={15} /> New project</button>
+            <button className="button button-primary" onClick={() => setNewProjectOpen(true)} disabled={!canUseWorkspace} title={!canUseWorkspace ? "Connect MongoDB or enable local demo mode" : "Create a project"}><Plus size={15} /> New project</button>
           </div>
         </header>
 
-        {!projects.length ? <div className="empty-project"><div className="empty-project-card"><div className="empty-icon"><WandSparkles size={27} /></div><div className="eyebrow" style={{ justifyContent: "center" }}>AI-assisted revision management</div><h1>Good feedback deserves a better workflow.</h1><p>Start a project, import client comments, and turn them into a prioritized and traceable revision queue. You can use the demo data before adding API keys.</p><div className="empty-project-actions"><button className="button button-primary" onClick={() => setNewProjectOpen(true)}><Plus size={15} /> Create a project</button><button className="button button-secondary" disabled={actionLoading === "demo" || apiStatus?.demoSeedEnabled === false} onClick={loadDemo}>{actionLoading === "demo" ? <span className="spinner" /> : <Sparkles size={15} />} Load demo data</button></div><p style={{ fontSize: 10, marginTop: 18, marginBottom: 0 }}>Need live website context? Configure TINYFISH_API_KEY in the backend environment.</p></div></div> : !project ? <div className="empty-project"><div className="empty-project-card"><LoaderCircle className="spinner" size={28} /><h1>Loading project…</h1></div></div> : <div className="page-content">
+        {apiStatus && (!apiStatus.databaseConnected || apiStatus.localDemoModeActive) && <div className="database-warning" role="status"><strong>{localDemoActive ? "Local prototype mode" : "Database connection needed"}</strong><span>{localDemoActive ? "You can run the full feedback workflow in temporary memory without Atlas. Data resets when the backend restarts. Restart after configuring MONGODB_URI to use persistent MongoDB storage." : "The frontend and API are running, but MongoDB is not connected. Add your Atlas URI to server/.env; this screen will retry automatically after the backend reconnects."}</span></div>}
+
+        {!projects.length ? <div className="empty-project"><div className="empty-project-card"><div className="empty-icon"><WandSparkles size={27} /></div><div className="eyebrow" style={{ justifyContent: "center" }}>AI-assisted revision management</div><h1>Good feedback deserves a better workflow.</h1><p>{apiStatus?.databaseConnected ? "Start a project, import client comments, and turn them into a prioritized and traceable revision queue. You can use demo data before adding AI API keys." : apiStatus?.localDemoModeAvailable ? "The local prototype can run its complete workflow in temporary memory while Atlas is unavailable. Load the sample project to demo extraction, duplicates, conflicts, tasks, and approvals; data resets when the server restarts." : "Connect MongoDB Atlas by setting MONGODB_URI in server/.env. The app will retry the database connection automatically."}</p><div className="empty-project-actions"><button className="button button-primary" onClick={() => setNewProjectOpen(true)} disabled={!canUseWorkspace}><Plus size={15} /> Create a project</button><button className="button button-secondary" disabled={!canUseWorkspace || actionLoading === "demo" || apiStatus?.demoSeedEnabled === false} onClick={loadDemo}>{actionLoading === "demo" ? <span className="spinner" /> : <Sparkles size={15} />} Load demo data</button></div><p style={{ fontSize: 10, marginTop: 18, marginBottom: 0 }}>Need live website context? Configure TINYFISH_API_KEY in the backend environment.</p></div></div> : !project ? <div className="empty-project"><div className="empty-project-card"><LoaderCircle className="spinner" size={28} /><h1>Loading project…</h1></div></div> : <div className="page-content">
           <div className="page-heading">
             <div><div className="eyebrow"><Sparkles size={12} /> The AI revision resolver</div><h1>{activeView === "overview" ? "Feedback workspace" : VIEWS.find((v) => v.id === activeView)?.label}</h1><p>{activeView === "overview" ? `A clearer view of client feedback for ${project.clientName || "your client"}.` : viewDescription(activeView)}</p></div>
             <div className="heading-buttons">
@@ -458,7 +483,7 @@ export default function HomePage() {
         </div>}
       </main>
 
-      {newProjectOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setNewProjectOpen(false); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-project-title"><div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}><div><div className="eyebrow"><Plus size={12} /> NEW WORKSPACE</div><h2 id="create-project-title">Create a project</h2><p className="modal-sub">Keep one client's feedback, website context, tasks, and approvals together.</p></div><button className="button button-quiet" aria-label="Close modal" onClick={() => setNewProjectOpen(false)}><X size={17} /></button></div><form onSubmit={createProject}><div className="field-wrap"><label className="field-label" htmlFor="project-name">Project name</label><input id="project-name" className="field" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} required minLength={2} maxLength={120} /></div><div className="field-wrap"><label className="field-label" htmlFor="client-name">Client / organization</label><input id="client-name" className="field" value={newClientName} onChange={(e) => setNewClientName(e.target.value)} maxLength={120} /></div><div className="field-wrap"><label className="field-label" htmlFor="website-url">Website URL <span className="muted" style={{ fontWeight: 400 }}>(optional)</span></label><input id="website-url" className="field" type="url" placeholder="https://your-client-site.com" value={newWebsiteUrl} onChange={(e) => setNewWebsiteUrl(e.target.value)} /></div><p className="helper-text">You can fetch public website context using TinyFish after creating the project. Keep API credentials in the backend environment only.</p><div className="modal-actions"><button className="button button-secondary" type="button" onClick={() => setNewProjectOpen(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={actionLoading === "create-project"}>{actionLoading === "create-project" ? <span className="spinner" /> : <Plus size={14} />} Create project</button></div></form></div></div>}
+      {newProjectOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setNewProjectOpen(false); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-project-title"><div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}><div><div className="eyebrow"><Plus size={12} /> NEW WORKSPACE</div><h2 id="create-project-title">Create a project</h2><p className="modal-sub">Keep one client's feedback, website context, tasks, and approvals together.</p></div><button className="button button-quiet" aria-label="Close modal" onClick={() => setNewProjectOpen(false)}><X size={17} /></button></div><form onSubmit={createProject}><div className="field-wrap"><label className="field-label" htmlFor="project-name">Project name</label><input id="project-name" className="field" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} required minLength={2} maxLength={120} /></div><div className="field-wrap"><label className="field-label" htmlFor="client-name">Client / organization</label><input id="client-name" className="field" value={newClientName} onChange={(e) => setNewClientName(e.target.value)} maxLength={120} /></div><div className="field-wrap"><label className="field-label" htmlFor="website-url">Website URL <span className="muted" style={{ fontWeight: 400 }}>(optional)</span></label><input id="website-url" className="field" type="url" placeholder="https://your-client-site.com" value={newWebsiteUrl} onChange={(e) => setNewWebsiteUrl(e.target.value)} /></div><p className="helper-text">You can fetch public website context using TinyFish after creating the project. Keep API credentials in the backend environment only.</p><div className="modal-actions"><button className="button button-secondary" type="button" onClick={() => setNewProjectOpen(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={!canUseWorkspace || actionLoading === "create-project"}>{actionLoading === "create-project" ? <span className="spinner" /> : <Plus size={14} />} Create project</button></div></form></div></div>}
       {notice && <div className={`notice ${notice.tone}`} role="status"><div>{notice.tone === "error" ? <AlertCircle size={16} /> : notice.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}</div><div style={{ flex: 1 }}>{notice.message}</div><button onClick={() => setNotice(null)} aria-label="Dismiss notification"><X size={14} /></button></div>}
     </div>
   );
