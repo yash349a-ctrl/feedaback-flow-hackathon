@@ -375,7 +375,7 @@ export default function HomePage() {
         <div className="brand"><div className="brand-mark"><WandSparkles size={21} /></div><div className="brand-text"><div className="brand-name">FeedbackFlow</div><div className="brand-sub">AI revision resolver</div></div></div>
         <div className="side-label">Workspace</div>
         <nav className="nav-list" aria-label="Main navigation">
-          {VIEWS.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${activeView === id ? "active" : ""}`} onClick={() => setActiveView(id)}><Icon size={17} strokeWidth={1.8} /><span>{label}</span>{id === "groups" && proposedGroups.length > 0 && <span className="nav-count">{proposedGroups.length}</span>}{id === "conflicts" && openConflicts.length > 0 && <span className="nav-count">{openConflicts.length}</span>}</button>)}
+          {VIEWS.map(({ id, label, icon: Icon }) => <button key={id} aria-label={label} title={label} className={`nav-item ${activeView === id ? "active" : ""}`} onClick={() => setActiveView(id)}><Icon size={17} strokeWidth={1.8} /><span>{label}</span>{id === "groups" && proposedGroups.length > 0 && <span className="nav-count">{proposedGroups.length}</span>}{id === "conflicts" && openConflicts.length > 0 && <span className="nav-count">{openConflicts.length}</span>}</button>)}
         </nav>
         <div className="sidebar-bottom">
           <div className="side-label">Your projects</div>
