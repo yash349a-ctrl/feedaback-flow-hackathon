@@ -95,6 +95,15 @@ function splitFeedback(raw: string): string[] {
 function pairKey(ids: string[]): string { return ids.map(String).sort().join(":"); }
 function priorityRank(value: string): number { return value === "high" ? 3 : value === "medium" ? 2 : 1; }
 
+// Mongoose's InferSchemaType can expose required ObjectId fields as possibly
+// undefined in query documents under strict TypeScript. Validate these IDs at
+// the route boundary so production builds stay strict without unsafe casts.
+function requireObjectIdValue(value: unknown, label: string): Types.ObjectId {
+  if (value instanceof Types.ObjectId) return value;
+  if (mongoose.isValidObjectId(value)) return new Types.ObjectId(String(value));
+  throw new HttpError(500, `${label} is missing or invalid.`);
+}
+
 async function createTaskForComments(projectId: Types.ObjectId, comments: any[], title?: string) {
   if (!comments.length) return null;
   const actionable = comments.filter((c) => c.type === "actionable");
@@ -470,24 +479,25 @@ app.post("/api/projects/:projectId/groups/:groupId/decision", asyncHandler(async
   if (!parsed.success) throw new HttpError(400, "Choose merge or keep separate.");
   const group = await Group.findOne({ _id: req.params.groupId, projectId: req.params.projectId, status: "proposed" });
   if (!group) throw new HttpError(404, "Proposed group not found or already decided.");
-  const comments = await Comment.find({ _id: { $in: group.commentIds }, projectId: group.projectId }).sort({ sequence: 1 });
+  const groupProjectId = requireObjectIdValue(group.projectId, "Group project ID");
+  const comments = await Comment.find({ _id: { $in: group.commentIds }, projectId: groupProjectId }).sort({ sequence: 1 });
   let task: any = null;
   if (parsed.data.action === "merge") {
     const title = comments.find((c) => c.type === "actionable")?.normalizedRequest || "Consolidated revision request";
-    task = await createTaskForComments(group.projectId, comments, title);
+    task = await createTaskForComments(groupProjectId, comments, title);
     group.status = "merged"; group.taskId = task?._id || null;
   } else {
     group.status = "rejected";
     await Comment.updateMany({ _id: { $in: group.commentIds } }, { $set: { groupId: null } });
     for (const comment of comments) {
       if (comment.type === "actionable" && !comment.taskId) {
-        const created = await createTaskForComments(group.projectId, [comment]);
+        const created = await createTaskForComments(groupProjectId, [comment]);
         if (!task) task = created;
       }
     }
   }
   await group.save();
-  await refreshTaskConflictLinks(group.projectId);
+  await refreshTaskConflictLinks(groupProjectId);
   res.json({ group, task });
 }));
 
@@ -503,6 +513,7 @@ app.patch("/api/conflicts/:conflictId/resolve", asyncHandler(async (req, res) =>
   if (!parsed.success) throw new HttpError(400, "Choose Follow A, Follow B, or Ask client.");
   const conflict = await Conflict.findById(req.params.conflictId);
   if (!conflict) throw new HttpError(404, "Conflict not found.");
+  const conflictProjectId = requireObjectIdValue(conflict.projectId, "Conflict project ID");
   conflict.resolution = parsed.data.action;
   if (parsed.data.action === "ask_client") {
     conflict.status = "open"; conflict.resolvedAt = null;
@@ -510,7 +521,7 @@ app.patch("/api/conflicts/:conflictId/resolve", asyncHandler(async (req, res) =>
     conflict.status = "resolved"; conflict.resolvedAt = new Date();
   }
   await conflict.save();
-  await refreshTaskConflictLinks(conflict.projectId);
+  await refreshTaskConflictLinks(conflictProjectId);
   res.json({ conflict });
 }));
 
